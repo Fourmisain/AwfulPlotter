@@ -2,6 +2,7 @@ package awfulplotter;
 
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
 import java.lang.reflect.InvocationTargetException;
 import java.util.*;
@@ -9,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.RunnableFuture;
+import java.util.function.Consumer;
 import javax.swing.*;
 import javax.swing.event.MouseInputListener;
 
@@ -17,7 +19,6 @@ import static java.awt.event.InputEvent.*;
 
 public class AwfulPlotter extends JPanel implements MouseInputListener, MouseWheelListener, ComponentListener {
 
-	public static final int SIZE = 800;
 	public static final Font font = new Font(Font.MONOSPACED, Font.PLAIN, 12);
 
 	public static JFrame createPlotterFrame(AwfulPlotter plotter) throws ExecutionException, InterruptedException {
@@ -41,12 +42,24 @@ public class AwfulPlotter extends JPanel implements MouseInputListener, MouseWhe
 		});
 	}
 
-	public static void fillCircle(Graphics g, double x, double y, double r) {
-		g.fillOval((int)Math.round(x-r), (int)Math.round(y-r), (int)r*2, (int)r*2);
+	// basically a generator interface
+	public interface DrawInstructor {
+		void provideInstructions(Consumer<Pair<Double, DrawInstruction>> consumer, double minX, double maxX);
 	}
 
-	public static void drawCircle(Graphics g, double x, double y, double r) {
-		g.drawOval((int)Math.round(x-r), (int)Math.round(y-r), (int)r*2, (int)r*2);
+	public static final int CIRCLE_RADIUS = 3;
+
+	public enum DrawInstruction {
+		FILL_CIRCLE,
+		DRAW_CIRCLE
+	}
+
+	public static void fillCircle(Graphics2D g2d, double x, double y, double r) {
+		g2d.fill(new Ellipse2D.Double(x-r, y-r, 2*r, 2*r));
+	}
+
+	public static void drawCircle(Graphics2D g2d, double x, double y, double r) {
+		g2d.draw(new Ellipse2D.Double(x-r, y-r, 2*r, 2*r));
 	}
 
 	protected static class Plot {
@@ -55,11 +68,9 @@ public class AwfulPlotter extends JPanel implements MouseInputListener, MouseWhe
 		Color color;
 	}
 
-
 	protected final List<Plot> plots = new ArrayList<>();
 	protected final List<Color> colors = List.of(Color.BLUE, new Color(206, 140, 101), Color.RED, new Color(64, 128, 64));
 
-	protected int fineness = 1; // pixel gap
 	protected double xUnit = 50; // unit in pixels
 	protected double yUnit = 50; // unit in pixels
 
@@ -68,18 +79,23 @@ public class AwfulPlotter extends JPanel implements MouseInputListener, MouseWhe
 	protected int mouseX, mouseY;
 
 	public AwfulPlotter() throws Exception {
+		this(800, 800);
+	}
+
+	public AwfulPlotter(int width, int height) throws Exception {
 		addMouseListener(this);
 		addMouseMotionListener(this);
 		addMouseWheelListener(this);
 		addComponentListener(this);
 
-		w = h = SIZE;
+		w = width;
+		h = height;
 		mouseX = xOffset = w / 2;
 		mouseY = yOffset = h / 2;
 
 		SwingUtilities.invokeAndWait(() -> {
-			AwfulPlotter.this.setPreferredSize(new Dimension(w, h));
-			AwfulPlotter.this.setBackground(Color.WHITE);
+			setPreferredSize(new Dimension(w, h));
+			setBackground(Color.WHITE);
 		});
 	}
 
@@ -103,6 +119,22 @@ public class AwfulPlotter extends JPanel implements MouseInputListener, MouseWhe
 	public synchronized void clearPlots() {
 		plots.clear();
 		repaint();
+	}
+
+	public int toXPixel(double x) {
+		return (int)Math.round(xUnit * x) + xOffset;
+	}
+
+	public double fromXPixel(int x) {
+		return (x - xOffset) / xUnit;
+	}
+
+	public int toYPixel(double y) {
+		return (int)Math.round(yUnit * -y + yOffset);
+	}
+
+	public double fromYPixel(int y) {
+		return (-y + yOffset) / yUnit;
 	}
 
 	@Override public void mousePressed(MouseEvent e) {
@@ -171,7 +203,7 @@ public class AwfulPlotter extends JPanel implements MouseInputListener, MouseWhe
 	}
 
 	@Override public void componentResized(ComponentEvent e) {
-		xOffset += (getWidth() - w) / 2.0;
+		xOffset += (getWidth()  - w) / 2.0;
 		yOffset += (getHeight() - h) / 2.0;
 
 		w = getWidth();
@@ -181,22 +213,6 @@ public class AwfulPlotter extends JPanel implements MouseInputListener, MouseWhe
 	@Override public void componentMoved(ComponentEvent e) { }
 	@Override public void componentShown(ComponentEvent e) { }
 	@Override public void componentHidden(ComponentEvent e) { }
-
-	protected int toXPixel(double x) {
-		return (int)Math.round(xUnit * x) + xOffset;
-	}
-
-	protected double fromXPixel(int x) {
-		return (x - xOffset) / xUnit;
-	}
-
-	protected int toYPixel(double y) {
-		return (int)Math.round(yUnit * -y + yOffset);
-	}
-
-	protected double fromYPixel(int y) {
-		return (-y + yOffset) / yUnit;
-	}
 
 	@Override public void paintComponent(Graphics g) {
 		super.paintComponent(g);
@@ -233,21 +249,28 @@ public class AwfulPlotter extends JPanel implements MouseInputListener, MouseWhe
 			g.setColor(p.color);
 
 			// plot points
-			Path2D path = new Path2D.Float();
+			Path2D path = new Path2D.Double();
 			path.moveTo(0, toYPixel(p.f.apply(fromXPixel(0))));
-			for (int x = 1; x <= w; x += fineness)
+			for (int x = 1; x <= w; x++)
 				path.lineTo(x, toYPixel(p.f.apply(fromXPixel(x))));
 			g2d.draw(path);
 
-			// TODO: generify
-			if (p.f instanceof SmoothNoise) {
-				SmoothNoise noise = (SmoothNoise)p.f;
+			if (p.f instanceof DrawInstructor) {
+				DrawInstructor drawInstructor = (DrawInstructor)p.f;
 
-				for (Entry<Integer, Double> entry : noise.fixedRandomPoints.entrySet()) {
-					double x = entry.getKey();
-					double y = entry.getValue();
-					fillCircle(g, toXPixel(x), toYPixel(noise.scale(y)), 3);
-				}
+				// execute custom draw instructions
+				drawInstructor.provideInstructions((pair) -> {
+					double x = pair.getKey(); // in function domain
+
+					switch (pair.getValue()) {
+						case FILL_CIRCLE:
+							fillCircle(g2d, toXPixel(x), toYPixel(p.f.apply(x)), CIRCLE_RADIUS);
+							break;
+						case DRAW_CIRCLE:
+							drawCircle(g2d, toXPixel(x), toYPixel(p.f.apply(x)), CIRCLE_RADIUS);
+							break;
+					}
+				}, fromXPixel(-CIRCLE_RADIUS), fromXPixel(w-1 + CIRCLE_RADIUS));
 			}
 		}
 	}

@@ -7,7 +7,7 @@ An awful plotter nobody should use
 
 * No optimization
 * Awful text display
-* Hardcoded default size
+* ~~Hardcoded default size~~
 * See those dots? Good luck plotting them for your own functions
 * No build system support or anything
 * Outdated screenshot by first release
